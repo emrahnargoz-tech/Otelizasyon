@@ -1,0 +1,502 @@
+import streamlit as st
+import pandas as pd
+import datetime
+import json
+from streamlit_option_menu import option_menu
+
+# --- 1. SAYFA VE STİL AYARLARI ---
+st.set_page_config(page_title="74 Odalı Profesyonel Otel Otomasyonu", layout="wide", initial_sidebar_state="collapsed")
+
+st.markdown("""
+<style>
+    .stButton>button { width: 100%; height: 65px; font-weight: bold; font-size: 13px; border-radius: 8px; white-space: pre-wrap; }
+    .block-container { padding-top: 1rem; }
+</style>
+""", unsafe_allow_html=True)
+
+# --- 2. VERİTABANI VE OTURUM YÖNETİMİ ---
+if 'para_birimi' not in st.session_state:
+    st.session_state.para_birimi = "TL"
+
+if 'sistem_loglari' not in st.session_state:
+    st.session_state.sistem_loglari = []
+
+if 'temizlik_plani' not in st.session_state:
+    st.session_state.temizlik_plani = []
+
+def log_ekle(kisi, islem_detayi):
+    zaman = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state.sistem_loglari.insert(0, {"Tarih": zaman, "Kişi": kisi, "İşlem": islem_detayi})
+
+if 'odalar' not in st.session_state:
+    st.session_state.odalar = {}
+    st.session_state.fiyatlar = {"STD": 1500, "DBL": 2500, "SUI": 4000}
+    st.session_state.kapasiteler = {"STD": 2, "DBL": 3, "SUI": 4, "ELEKTRA": 99}
+    st.session_state.elektra_adet = 24
+    st.session_state.aktif_notlar = []
+    
+    st.session_state.paketler = ["Sadece Oda (BO)", "Oda Kahvaltı (BB)", "Yarım Pansiyon (HB)", "Tam Pansiyon (FB)", "Her Şey Dahil (ALL)", "VIP Paket"]
+    st.session_state.personel = ["Müdür Ahmet", "Şef Ayşe", "Resepsiyonist Ali", "Resepsiyonist Veli"]
+    st.session_state.kanallar = ["Booking.com", "Expedia", "Tatilbudur", "Trivago", "Jolly Tur", "ETS Tur", "Otelz.com", "Doğrudan Telefon", "Walk-in (Kapı Müşterisi)", "Doğrudan Mail", "Diğer"]
+    st.session_state.sifreler = {"Müdür": "12345", "Ön Büro Şefi": "12345", "Resepsiyonist": "12345"}
+    
+    for i in range(1, 75):
+        if i <= st.session_state.elektra_adet:
+            st.session_state.odalar[i] = {
+                "tip": "ELEKTRA", "durum": "KİLİTLİ", "misafir": None, "giris_t": None, "cikis_t": None,
+                "grup": "Münferit", "paket": "Sadece Oda (BO)", "not": "", "kaynak": None, "folio": 0, "folio_detay": [], "gecmis": [], "yanindakiler": "", "ek_yatak": False, "yas": None
+            }
+        else:
+            tip = "SUI" if i % 15 == 0 else ("DBL" if i % 3 == 0 else "STD")
+            st.session_state.odalar[i] = {
+                "tip": tip, "durum": "BOŞ", "misafir": None, "giris_t": None, "cikis_t": None,
+                "grup": "Münferit", "paket": "Sadece Oda (BO)", "not": "", "kaynak": None, "folio": 0, "folio_detay": [], "gecmis": [], "yanindakiler": "", "ek_yatak": False, "yas": None
+            }
+
+    st.session_state.odalar[25] = {
+        "tip": "STD", "durum": "DOLU", "misafir": "Ahmet Doğan", "giris_t": str(datetime.date.today()), "cikis_t": str(datetime.date.today() + datetime.timedelta(days=2)),
+        "grup": "Münferit", "paket": "Oda Kahvaltı (BB)", "not": "Sert yastık tercih ediyor.", "kaynak": "Booking.com", "folio": 3000, 
+        "folio_detay": [{"Tarih": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), "Harcama Kalemi": "Oda Konaklama Ücreti", "Tutar": 3000}], 
+        "gecmis": [], "yanindakiler": "Mehmet Bey (Giriş: 26.05 - Çıkış: 28.05)", "ek_yatak": False, "yas": 45
+    }
+
+if 'misafir_veritabanı' not in st.session_state:
+    st.session_state.misafir_veritabanı = {
+        "Ahmet Doğan": {
+            "notlar": "⭐ VIP Misafir.",
+            "gecmis": [{"Oda No": "Oda 25", "Giriş Tarihi": str(datetime.date.today()), "Çıkış Tarihi": str(datetime.date.today() + datetime.timedelta(days=2)), "Gece": 2, "Yanındakiler": "Mehmet Bey", "Paket": "Oda Kahvaltı (BB)"}]
+        }
+    }
+
+# --- 3. KULLANICI GİRİŞ SİSTEMİ ---
+if 'giris_ok' not in st.session_state:
+    st.title("🏨 74 Odalı Profesyonel Otel Yönetim Otomasyonu")
+    st.subheader("🔐 Güvenli Giriş Paneli")
+    rol = st.selectbox("Giriş Yapacak Rol:", ["Resepsiyonist", "Ön Büro Şefi", "Müdür"])
+    sifre = st.text_input("Şifre:", type="password")
+    
+    if st.button("Sistemi Aç"):
+        if sifre == st.session_state.sifreler[rol]:
+            st.session_state.giris_ok = True
+            st.session_state.aktif_rol = rol
+            st.rerun()
+        else:
+            st.error("❌ Hatalı Şifre!")
+    st.stop()
+
+pb = st.session_state.para_birimi
+yetkili_mi = st.session_state.aktif_rol in ["Müdür", "Ön Büro Şefi"]
+
+# --- 4. YATAY ÜST MENÜ ---
+menu = option_menu(
+    menu_title=None,
+    options=["Oda Planı", "Rezervasyon", "Misafir CRM", "Folyo İşlemleri", "Takvim Matris", "Kat Hizmetleri", "Ayarlar"],
+    icons=["building", "calendar-plus", "people-fill", "credit-card", "calendar3", "droplet-half", "gear"],
+    default_index=0,
+    orientation="horizontal",
+    styles={
+        "container": {"padding": "0!important", "background-color": "#f8f9fa", "border-radius": "10px"},
+        "icon": {"color": "#ff9900", "font-size": "16px"}, 
+        "nav-link": {"font-size": "14px", "text-align": "center", "margin":"0px", "--hover-color": "#e2e6ea"},
+        "nav-link-selected": {"background-color": "#004b87", "color": "white"},
+    }
+)
+
+st.sidebar.title(f"👤 {st.session_state.aktif_rol}")
+if st.sidebar.button("Güvenli Çıkış"):
+    del st.session_state.giris_ok
+    st.rerun()
+
+st.markdown("---")
+
+# ==========================================
+# MENÜ 1: ANA EKRAN (RACK RATE & ARA MİSAFİR EKLEME)
+# ==========================================
+if menu == "Oda Planı":
+    st.title("🏨 Ön Büro Canlı Oda Planı")
+    
+    dolular = sum(1 for o in st.session_state.odalar.values() if o["durum"] == "DOLU")
+    boslar = sum(1 for o in st.session_state.odalar.values() if o["durum"] == "BOŞ")
+    rezerveler = sum(1 for o in st.session_state.odalar.values() if o["durum"] == "REZERVE")
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("🟣 Elektra Odaları", f"{st.session_state.elektra_adet}")
+    col2.metric("🟢 Boş Odalar", f"{boslar}")
+    col3.metric("🔴 Dolu Odalar", f"{dolular}")
+    col4.metric("🔵 Rezerve Odalar", f"{rezerveler}")
+    col5.metric("🧹 Bekleyen Temizlik", f"{len(st.session_state.temizlik_plani)}")
+
+    grid_cols = st.columns(10)
+    for i in range(1, 75):
+        oda = st.session_state.odalar[i]
+        if oda["tip"] == "ELEKTRA": emo = "🟣"
+        elif oda["durum"] == "DOLU": emo = "🔴"
+        elif oda["durum"] == "REZERVE": emo = "🔵"
+        else: emo = "🟢"
+        
+        misafir_eki = f"\n{oda['misafir'][:10]}" if oda["misafir"] else ""
+        ek_yatak_eki = " 🛏️" if oda.get("ek_yatak", False) else ""
+        btn_label = f"{emo} Oda {i}{ek_yatak_eki}{misafir_eki}"
+        
+        with grid_cols[(i-1) % 10]:
+            if st.button(btn_label, key=f"rack_{i}"):
+                st.session_state.secili_oda_detay = i
+
+    if 'secili_oda_detay' in st.session_state:
+        num = st.session_state.secili_oda_detay
+        oda = st.session_state.odalar[num]
+        st.markdown(f"---")
+        st.subheader(f"🔍 Oda {num} İşlem Paneli")
+        
+        tab1, tab2, tab3 = st.tabs(["📊 Temel Bilgileri Düzenle", "👥 Sonradan Misafir Ekle (Ara Giriş)", "📌 Not Ekle"])
+        
+        with tab1:
+            y_misafir = st.text_input("Ana Misafir İsmi:", value=oda["misafir"] if oda["misafir"] else "")
+            y_durum = st.selectbox("Durum:", ["BOŞ", "DOLU", "REZERVE", "KİLİTLİ"], index=["BOŞ", "DOLU", "REZERVE", "KİLİTLİ"].index(oda["durum"]))
+            islem_yapan_isim = st.selectbox("İşlemi Yapan Personel:", st.session_state.personel, key=f"islem_{num}")
+            
+            if st.button("Değişiklikleri Kaydet"):
+                oda["misafir"] = y_misafir if y_misafir else None
+                oda["durum"] = y_durum
+                log_ekle(islem_yapan_isim, f"Oda {num} bilgileri güncellendi (Yeni Durum: {y_durum}).")
+                st.success("Oda bilgileri başarıyla güncellendi."); st.rerun()
+
+        # YENİ: ARA MİSAFİR (SPLIT STAY) EKLEME EKRANI
+        with tab2:
+            st.markdown("👨‍👩‍👧 **Odaya Farklı Tarihlerde Katılacak / Ayrılacak Kişileri Ekle**")
+            st.info(f"Mevcut Yanındakiler Listesi: {oda['yanindakiler'] if oda['yanindakiler'] else 'Yok'}")
+            
+            ek_misafir_adi = st.text_input("Eklenecek / Çıkarılacak Ara Misafir Adı:")
+            col_d1, col_d2 = st.columns(2)
+            ek_giris = col_d1.date_input("Kişinin Giriş Tarihi:", value=datetime.date.today())
+            ek_cikis = col_d2.date_input("Kişinin Çıkış Tarihi:", value=datetime.date.today() + datetime.timedelta(days=1))
+            
+            islem_yapan_ek = st.selectbox("İşlemi Giren Personel:", st.session_state.personel, key=f"ek_per_{num}")
+            
+            if st.button("Ara Misafiri Odaya Tanımla"):
+                if ek_misafir_adi.strip():
+                    yeni_bilgi = f"{ek_misafir_adi} ({ek_giris.strftime('%d.%m')} - {ek_cikis.strftime('%d.%m')})"
+                    oda["yanindakiler"] = oda["yanindakiler"] + ", " + yeni_bilgi if oda["yanindakiler"] else yeni_bilgi
+                    
+                    otomatik_not = f"SİSTEM: Odaya ara misafir eklendi -> {yeni_bilgi}"
+                    oda["not"] = oda["not"] + " | " + otomatik_not if oda["not"] else otomatik_not
+                    
+                    log_ekle(islem_yapan_ek, f"Oda {num}'ye ara misafir eklendi: {ek_misafir_adi}")
+                    st.success("Ara misafir başarıyla eklendi, giriş-çıkış tarihleri kaydedildi ve odaya otomatik not düşüldü!"); st.rerun()
+                else:
+                    st.error("Lütfen eklenecek kişinin adını giriniz.")
+
+        with tab3:
+            yeni_not = st.text_input("Oda İçin Manuel Not Giriniz:", value=oda["not"])
+            not_yapan = st.selectbox("Notu Ekleyen Personel:", st.session_state.personel, key=f"not_{num}")
+            if st.button("Notu Kaydet"):
+                oda["not"] = yeni_not
+                log_ekle(not_yapan, f"Oda {num} için manuel not bırakıldı.")
+                st.success("Not başarıyla kaydedildi."); st.rerun()
+
+# ==========================================
+# MENÜ 2: REZERVASYON & CHECK-IN
+# ==========================================
+elif menu == "Rezervasyon":
+    st.title("📝 Rezervasyon ve Check-in Girişi")
+    musaitler = [f"Oda {k} ({v['tip']})" for k, v in st.session_state.odalar.items() if v["durum"] == "BOŞ"]
+    
+    st.markdown("### 👤 Misafir Kimlik Doğrulama (CRM)")
+    misafir_turu = st.radio("Misafir Kayıt Türü:", ["Sistemde Kayıtlı Misafir (Eski Konuk)", "Yeni Misafir Girişi"], horizontal=True)
+    
+    aktif_misafir = ""
+    if misafir_turu == "Sistemde Kayıtlı Misafir (Eski Konuk)":
+        aktif_misafir = st.selectbox("Arşivden Misafir Seçin:", ["Lütfen Seçiniz..."] + list(st.session_state.misafir_veritabanı.keys()))
+        if aktif_misafir != "Lütfen Seçiniz...":
+            p_data = st.session_state.misafir_veritabanı[aktif_misafir]
+            st.success(f"🌟 **VIP TANIMA AKTİF:** {aktif_misafir} tekrar otelimize hoş geldi!\n\n📌 **Notlar:** {p_data['notlar']}")
+    else:
+        aktif_misafir = st.text_input("Yeni Misafir Adı Soyadı:")
+    
+    st.markdown("---")
+    
+    with st.form("rez_formu"):
+        c1, c2 = st.columns(2)
+        c1.markdown(f"**İşlem Yapılacak Misafir:** `{aktif_misafir if aktif_misafir and aktif_misafir != 'Lütfen Seçiniz...' else 'Seçim Bekleniyor'}`")
+        
+        yas = c1.number_input("Ana Misafir Yaşı:", min_value=0, max_value=120, value=30)
+        kanal = c1.selectbox("Rezervasyon Kaynağı:", st.session_state.kanallar)
+        paket_secimi = c1.selectbox("Konaklama Konsepti / Paket:", st.session_state.paketler)
+        grup_adi = c1.text_input("Grup / Tur Adı (Yoksa boş bırakın):")
+        yan_kişiler = c1.text_area("Yanında Konaklayanlar (Virgülle ayırın):")
+        
+        g_tar = c2.date_input("Giriş Tarihi:", datetime.date.today())
+        c_tar = c2.date_input("Çıkış Tarihi:", datetime.date.today() + datetime.timedelta(days=1))
+        secilen_o_str = c2.selectbox("Oda Seçimi (Numara ve Tip):", musaitler if musaitler else ["MÜSAİT ODA YOK"])
+        
+        st.markdown("---")
+        st.markdown(f"💰 **Fiyatlandırma Ayarları ({pb})**")
+        col_f1, col_f2 = st.columns(2)
+        fiyat_tipi = col_f1.radio("Fiyatlandırma Yöntemi:", ["Standart Liste Fiyatı", "Özel İndirim Uygula (%)", "Manuel Toplam Tutar Gir"])
+        
+        indirim_orani = 0
+        manuel_tutar = 0.0
+        if fiyat_tipi == "Özel İndirim Uygula (%)":
+            indirim_orani = col_f2.number_input("İndirim Oranı (%)", min_value=0, max_value=100, value=10)
+        elif fiyat_tipi == "Manuel Toplam Tutar Gir":
+            manuel_tutar = col_f2.number_input(f"Toplam Manuel Tutar ({pb}):", min_value=0.0, value=1500.0)
+            
+        st.markdown("---")
+        stat = st.radio("Giriş Statüsü:", ["REZERVE (Gelecek)", "DOLU (Canlı Check-in)"])
+        islem_yapan_rez = st.selectbox("İşlemi Yapan Personel:", st.session_state.personel)
+        
+        submit = st.form_submit_button("Rezervasyonu Kaydet")
+        
+        if submit and musaitler:
+            if aktif_misafir == "" or aktif_misafir == "Lütfen Seçiniz...":
+                st.error("❌ Lütfen yukarıdan misafir adını belirleyiniz.")
+            else:
+                gece = (c_tar - g_tar).days
+                if gece <= 0: gece = 1
+                o_num = int(secilen_o_str.split(" ")[1])
+                oda_detay = st.session_state.odalar[o_num]
+                
+                ana_sayi = 1 
+                yan_sayi = len([i for i in yan_kişiler.split(",") if i.strip()]) if yan_kişiler.strip() else 0
+                toplam_kisi = ana_sayi + yan_sayi
+                maks_kap = st.session_state.kapasiteler.get(oda_detay["tip"], 2) + (1 if oda_detay.get("ek_yatak", False) else 0)
+                
+                if toplam_kisi > maks_kap:
+                    st.error(f"❌ Kapasite Engeli! Seçilen {oda_detay['tip']} oda en fazla {maks_kap} kişiliktir.")
+                else:
+                    if fiyat_tipi == "Standart Liste Fiyatı":
+                        ucret = st.session_state.fiyatlar.get(oda_detay["tip"], 1500) * gece
+                    elif fiyat_tipi == "Özel İndirim Uygula (%)":
+                        liste_fiyati = st.session_state.fiyatlar.get(oda_detay["tip"], 1500) * gece
+                        ucret = liste_fiyati - (liste_fiyati * (indirim_orani / 100))
+                    else:
+                        ucret = manuel_tutar
+
+                    oda_detay["durum"] = "DOLU" if "DOLU" in stat else "REZERVE"
+                    oda_detay["misafir"] = aktif_misafir
+                    oda_detay["yas"] = yas
+                    oda_detay["grup"] = grup_adi if grup_adi.strip() else "Münferit"
+                    oda_detay["paket"] = paket_secimi
+                    oda_detay["kaynak"] = kanal
+                    oda_detay["folio"] = ucret
+                    oda_detay["folio_detay"] = [{"Tarih": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), "Harcama Kalemi": f"Oda Ücreti ({gece} Gece - {paket_secimi})", "Tutar": ucret}]
+                    oda_detay["giris_t"] = str(g_tar)
+                    oda_detay["cikis_t"] = str(c_tar)
+                    oda_detay["yanindakiler"] = yan_kişiler
+                    
+                    log_ekle(islem_yapan_rez, f"Yeni rezervasyon: {aktif_misafir} (Oda {o_num})")
+                    
+                    if aktif_misafir not in st.session_state.misafir_veritabanı:
+                        st.session_state.misafir_veritabanı[aktif_misafir] = {"notlar": "Yeni Kayıt", "gecmis": []}
+                    st.session_state.misafir_veritabanı[aktif_misafir]["gecmis"].append({
+                        "Oda No": f"Oda {o_num}", "Giriş": str(g_tar), "Çıkış": str(c_tar), "Gece": gece, "Kişiler": yan_kişiler, "Paket": paket_secimi
+                    })
+                    
+                    st.success(f"🎉 İşlem Başarılı! Belirlenen Borç: {ucret} {pb}")
+
+# ==========================================
+# MENÜ 3: MİSAFİRLER & CRM ARŞİVİ
+# ==========================================
+elif menu == "Misafir CRM":
+    st.title("👥 Müşteri İlişkileri (CRM) Arşivi")
+    cl1, cl2 = st.columns([1, 2])
+    with cl1:
+        st.subheader("Kayıtlı Misafirler")
+        secilen_p = st.radio("Müşteri Seçin:", list(st.session_state.misafir_veritabanı.keys()))
+    with cl2:
+        if secilen_p:
+            p_data = st.session_state.misafir_veritabanı[secilen_p]
+            st.markdown(f"## 👤 Profil: {secilen_p}")
+            st.info(f"**Notlar:** {p_data['notlar']}")
+            st.markdown("### 📜 Konaklama Tarihçesi")
+            if p_data["gecmis"]:
+                st.dataframe(pd.DataFrame(p_data["gecmis"]), use_container_width=True)
+
+# ==========================================
+# MENÜ 4: FOLYO KARTI & CHECK-OUT (KAT HİZMETLERİ TETİKLEYİCİ)
+# ==========================================
+elif menu == "Folyo İşlemleri":
+    st.title("💳 Hesap Ekstresi ve Check-out")
+    
+    aktifler = [f"Oda {k} - {v['misafir']}" for k, v in st.session_state.odalar.items() if v["misafir"]]
+    if not aktifler:
+        st.info("İçeride aktif konuk bulunamadı.")
+    else:
+        s_oda = st.selectbox("Oda Seçiniz:", aktifler)
+        o_id = int(s_oda.split(" ")[1])
+        oda = st.session_state.odalar[o_id]
+        
+        st.markdown(f"### 📄 Fatura Sahibi: {oda['misafir']} | Oda: {o_id} | Paket: {oda.get('paket', 'Bilinmiyor')}")
+        st.metric(f"Güncel Toplam Folyo Bakiyesi ({pb}):", f"{oda['folio']} {pb}")
+        
+        with st.expander("🔍 Tüm Harcama ve İşlem Dökümünü Gör (Adisyon)", expanded=True):
+            if oda.get("folio_detay"):
+                df_folio = pd.DataFrame(oda["folio_detay"])
+                df_folio["Tutar"] = df_folio["Tutar"].astype(str) + f" {pb}"
+                st.dataframe(df_folio, use_container_width=True)
+                
+                st.markdown("#### 🗑️ Hatalı İşlemi Folyodan Sil")
+                silinecek_index = st.selectbox("İptal Edilecek Kalemi Seçin:", range(len(oda["folio_detay"])), 
+                                               format_func=lambda x: f"{oda['folio_detay'][x]['Tarih']} | {oda['folio_detay'][x]['Harcama Kalemi']} -> {oda['folio_detay'][x]['Tutar']} {pb}")
+                silme_yapan = st.selectbox("İşlemi İptal Eden Personel:", st.session_state.personel, key="silme_ad")
+                
+                if st.button("Seçili Kalemi İptal Et"):
+                    silinen_tutar = oda["folio_detay"][silinecek_index]["Tutar"]
+                    oda["folio"] -= silinen_tutar
+                    oda["folio_detay"].pop(silinecek_index)
+                    log_ekle(silme_yapan, f"Oda {o_id} folyosundan hatalı işlem silindi (Tutar: {silinen_tutar} {pb})")
+                    st.success("İşlem başarıyla iptal edildi ve bakiye güncellendi."); st.rerun()
+            else:
+                st.write("Henüz işlenmiş bir harcama kalemi yok.")
+        
+        st.markdown("---")
+        st.subheader("🛎️ Check-out (Çıkış) Operasyonu")
+        c_out_yapan = st.selectbox("Check-out Yapan Personel:", st.session_state.personel, key="cout_ad")
+        
+        if st.button("🔔 Tahsil Et ve Check-out Yap (Odayı Boşalt)"):
+            log_ekle(c_out_yapan, f"Oda {o_id} ({oda['misafir']}) check-out yapıldı. Tutar: {oda['folio']} {pb}")
+            st.success(f"🎉 {oda['folio']} {pb} tahsil edildi. Oda Kat Hizmetleri listesine temizlik için aktarıldı!")
+            
+            # YENİ: Kat Hizmetleri Temizlik Planına Otomatik İş Akışı Ekleme
+            st.session_state.temizlik_plani.append({
+                "Tarih / Saat": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "Oda No": f"Oda {o_id}",
+                "İşlem Tipi": "Check-out Temizliği (Tam Temizlik)",
+                "Durum": "Bekliyor 🧹"
+            })
+            
+            oda["gecmis"].append(f"{oda['misafir']} ({oda['giris_t']} - {oda['cikis_t']})")
+            oda["misafir"] = None
+            oda["folio"] = 0
+            oda["folio_detay"] = []
+            oda["grup"] = "Münferit"
+            oda["paket"] = "Sadece Oda (BO)"
+            oda["giris_t"] = None
+            oda["cikis_t"] = None
+            oda["yanindakiler"] = ""
+            oda["not"] = "" # Odanın notlarını yeni misafir için sıfırla
+            oda["yas"] = None
+            if oda["tip"] != "ELEKTRA": oda["durum"] = "BOŞ"
+            st.rerun()
+
+# ==========================================
+# MENÜ 5: CANLI TAKVİM
+# ==========================================
+elif menu == "Takvim Matris":
+    st.title("📅 Tarih Bazlı Durum Takvimi (Daily View)")
+    secilen_tarih = st.date_input("İncelemek İstediğiniz Tarihi Seçin:", datetime.date.today())
+    
+    takvim_verisi = []
+    for i in range(1, 75):
+        oda = st.session_state.odalar[i]
+        if oda["giris_t"] and oda["cikis_t"]:
+            try:
+                g_tar = datetime.datetime.strptime(oda["giris_t"], "%Y-%m-%d").date()
+                c_tar = datetime.datetime.strptime(oda["cikis_t"], "%Y-%m-%d").date()
+                
+                if g_tar <= secilen_tarih <= c_tar:
+                    if secilen_tarih == g_tar: gun_durumu = "GİRİŞ (Check-in)"
+                    elif secilen_tarih == c_tar: gun_durumu = "ÇIKIŞ (Check-out)"
+                    else: gun_durumu = "KONAKLIYOR (In-house)"
+                        
+                    takvim_verisi.append({
+                        "Oda": f"Oda {i}", "Tip": oda["tip"], "O Günki Durum": gun_durumu,
+                        "Misafir": oda["misafir"], "Paket": oda.get("paket", "Bilinmiyor"),
+                        "Grup/Tur": oda["grup"], "Giriş": oda["giris_t"], "Çıkış": oda["cikis_t"], "Borç": f"{oda['folio']} {pb}"
+                    })
+            except: pass 
+            
+    if takvim_verisi:
+        df_takvim = pd.DataFrame(takvim_verisi)
+        st.dataframe(df_takvim, use_container_width=True)
+        st.download_button("📥 Bu Listeyi Excel'e Aktar", df_takvim.to_csv(index=False).encode('utf-8'), f"takvim_{secilen_tarih}.csv", "text/csv")
+    else:
+        st.warning(f"Seçilen tarih olan {secilen_tarih} için sistemde aktif konaklama bulunmuyor.")
+
+# ==========================================
+# YENİ MENÜ 6: KAT HİZMETLERİ (HOUSEKEEPING)
+# ==========================================
+elif menu == "Kat Hizmetleri":
+    st.title("🧹 Kat Hizmetleri Temizlik ve İş Planı")
+    st.info("Resepsiyondan Check-out yapılan odalar, tarih ve saat sırasına göre otomatik olarak bu temizlik paneline düşer.")
+    
+    if st.session_state.temizlik_plani:
+        df_hk = pd.DataFrame(st.session_state.temizlik_plani)
+        st.dataframe(df_hk, use_container_width=True)
+        
+        st.markdown("---")
+        st.subheader("✅ Temizliği Tamamlanan Odayı Listeden Düş")
+        silinecek_gorev = st.selectbox("Tamamlanan Görevi Seçin:", range(len(st.session_state.temizlik_plani)), 
+                                       format_func=lambda x: f"{st.session_state.temizlik_plani[x]['Oda No']} - {st.session_state.temizlik_plani[x]['Tarih / Saat']}")
+        
+        if st.button("Seçili Odayı 'Temizlendi' Olarak İşaretle"):
+            tamamlanan_oda = st.session_state.temizlik_plani[silinecek_gorev]['Oda No']
+            st.session_state.temizlik_plani.pop(silinecek_gorev)
+            log_ekle("Sistem", f"Kat Hizmetleri: {tamamlanan_oda} temizlendi ve satışa hazır.")
+            st.success(f"{tamamlanan_oda} temizlendi olarak işaretlendi ve listeden kaldırıldı!"); st.rerun()
+    else:
+        st.success("🎉 Şu an bekleyen hiçbir temizlik görevi bulunmamaktadır. Tüm odalar pırıl pırıl!")
+
+# ==========================================
+# MENÜ 7: YÖNETİM & AYARLAR 
+# ==========================================
+elif menu == "Ayarlar":
+    st.title("⚙️ Yönetim Ayarları ve İşlem Geçmişi")
+    
+    with st.expander("🕵️‍♂️ Sistem İşlem Kayıtları (Audit Log)", expanded=False):
+        if st.session_state.sistem_loglari: st.dataframe(pd.DataFrame(st.session_state.sistem_loglari), use_container_width=True)
+        else: st.write("Henüz sisteme işlenmiş bir kayıt bulunmuyor.")
+    
+    st.markdown("---")
+    islem_imzasi = st.selectbox("İşlemi Yapan Yönetici:", st.session_state.personel)
+    
+    st.subheader("👥 0. Personel ve Paket Yönetimi")
+    col_p1, col_p2, col_p3 = st.columns(3)
+    
+    yeni_per = col_p1.text_input("Yeni Personel Ekle:")
+    if col_p1.button("Personel Ekle"):
+        if yeni_per and yeni_per not in st.session_state.personel:
+            st.session_state.personel.append(yeni_per)
+            log_ekle(islem_imzasi, f"Yeni personel eklendi: {yeni_per}")
+            st.success(f"{yeni_per} listeye eklendi."); st.rerun()
+            
+    sil_per = col_p2.selectbox("Personel Sil:", st.session_state.personel)
+    if col_p2.button("Personeli Sistemden Çıkar"):
+        if len(st.session_state.personel) > 1:
+            st.session_state.personel.remove(sil_per)
+            log_ekle(islem_imzasi, f"Personel silindi: {sil_per}")
+            st.success(f"{sil_per} sistemden silindi."); st.rerun()
+        else:
+            st.error("Sistemde en az 1 personel kalmak zorundadır!")
+            
+    yeni_paket = col_p3.text_input("Yeni Paket / Konsept Ekle:")
+    if col_p3.button("Paketi Ekle"):
+        if yeni_paket and yeni_paket not in st.session_state.paketler:
+            st.session_state.paketler.append(yeni_paket)
+            log_ekle(islem_imzasi, f"Yeni paket eklendi: {yeni_paket}")
+            st.success(f"{yeni_paket} konseptlere eklendi."); st.rerun()
+
+    st.markdown("---")
+    st.subheader("💱 1. Sistem Para Birimi")
+    yeni_pb = st.selectbox("Aktif para birimi:", ["TL", "USD", "EUR", "GBP"], index=["TL", "USD", "EUR", "GBP"].index(st.session_state.para_birimi))
+    if st.button("Para Birimini Kaydet"):
+        st.session_state.para_birimi = yeni_pb
+        log_ekle(islem_imzasi, f"Sistem para birimi {yeni_pb} yapıldı.")
+        st.success("Güncellendi."); st.rerun()
+            
+    st.markdown("---")
+    st.subheader("💾 2. Veri Yedekleme")
+    yedek_verisi = json.dumps({"odalar": st.session_state.odalar, "fiyatlar": st.session_state.fiyatlar, "misafirler": st.session_state.misafir_veritabanı, "pb": st.session_state.para_birimi, "personel": st.session_state.personel}, ensure_ascii=False)
+    st.download_button("📥 Sistemi Bilgisayara Yedekle (.json)", data=yedek_verisi, file_name=f"yedek_{datetime.datetime.now().strftime('%Y-%m-%d')}.json", mime="application/json")
+    
+    st.subheader("🛏️ 3. Oda Kapasite, Elektra ve Fiyat Ayarları")
+    yeni_el_sayisi = st.number_input("Elektra Oda Sayısı:", min_value=1, max_value=74, value=st.session_state.elektra_adet)
+    if st.button("Elektra Limitini Kaydet"):
+        st.session_state.elektra_adet = yeni_el_sayisi
+        log_ekle(islem_imzasi, f"Elektra limiti {yeni_el_sayisi} yapıldı.")
+        st.success("Limit güncellendi."); st.rerun()
+
+    cf1, cf2, cf3 = st.columns(3)
+    st.session_state.fiyatlar["STD"] = cf1.number_input(f"Standart Fiyat ({pb}):", value=st.session_state.fiyatlar["STD"])
+    st.session_state.fiyatlar["DBL"] = cf2.number_input(f"Double Fiyat ({pb}):", value=st.session_state.fiyatlar["DBL"])
+    st.session_state.fiyatlar["SUI"] = cf3.number_input(f"Suit Fiyat ({pb}):", value=st.session_state.fiyatlar["SUI"])
